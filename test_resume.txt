@@ -1,0 +1,11 @@
+Resume
+
+Name: test
+Email: test@gmal.com
+Phone: 12345
+
+Skills: abc,def,ghi,jkl,mno,pqr,stu.vwx.yz
+
+Experience: abc company, tew company. industries 
+
+Education: abc college, abc uni, abc school
