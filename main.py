@@ -1,16 +1,175 @@
 import tkinter as tk
-import tkinter.ttk as ttk
-from tkinter import filedialog
-from tkinter import colorchooser
+from tkinter import ttk, messagebox, filedialog
 from fpdf import FPDF
+import json
+import os
+from datetime import datetime
+import sys
+# Save Personal Info
+
+class DrawingCanvas:
+    def __init__(self, parent):
+        self.canvas = tk.Canvas(parent, bg="white", width=800, height=1000, scrollregion=(0, 0, 800, 1000))
+        
+        # Add scrollbars
+        self.v_scrollbar = tk.Scrollbar(parent, orient='vertical', command=self.canvas.yview)
+        self.h_scrollbar = tk.Scrollbar(parent, orient='horizontal', command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=self.v_scrollbar.set, xscrollcommand=self.h_scrollbar.set)
+        
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Draggable elements storage
+        self.draggable_items = {}
+        self.current_drag = None
+        self.drag_start_pos = (0, 0)
+        
+        # Bind events for dragging
+        self.canvas.bind("<Button-1>", self.start_drag)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.stop_drag)
+        self.canvas.bind("<Double-Button-1>", self.start_edit)
+
+    def start_drag(self, event):
+        # Find which item is being clicked
+        item = self.canvas.find_closest(event.x, event.y)
+        if item:
+            self.current_drag = item[0]
+            self.drag_start_pos = (event.x, event.y)
+            
+    def on_drag(self, event):
+        if self.current_drag:
+            # Calculate movement
+            dx = event.x - self.drag_start_pos[0]
+            dy = event.y - self.drag_start_pos[1]
+            
+            # Move the item
+            self.canvas.move(self.current_drag, dx, dy)
+            
+            # Update start position for next movement
+            self.drag_start_pos = (event.x, event.y)
+            
+    def stop_drag(self, event):
+        self.current_drag = None
+        
+    def start_edit(self, event):
+        item = self.canvas.find_closest(event.x, event.y)
+        if not item:
+            return
+            
+        item_id = item[0]
+        item_type = self.canvas.type(item_id)
+        
+        if item_type == "text":
+            # Get current text
+            current_text = self.canvas.itemcget(item_id, "text")
+            
+            # Get position and font
+            coords = self.canvas.coords(item_id)
+            font = self.canvas.itemcget(item_id, "font")
+            fill = self.canvas.itemcget(item_id, "fill")
+            
+            # Create editable entry widget
+            entry = tk.Entry(self.canvas, font=font, bg="white", fg=fill, 
+                           borderwidth=0, highlightthickness=1)
+            entry.insert(0, current_text)
+            entry.bind("<Return>", lambda e, i=item_id: self.finish_edit(e, i))
+            entry.bind("<FocusOut>", lambda e, i=item_id: self.finish_edit(e, i))
+            
+            # Place entry over the text
+            entry_window = self.canvas.create_window(coords[0], coords[1], 
+                                                   anchor="nw", window=entry)
+            
+            # Focus and select all text
+            entry.focus_set()
+            entry.select_range(0, tk.END)
+            
+            # Store reference
+            self.edit_data = {
+                'item_id': item_id,
+                'entry': entry,
+                'window_id': entry_window
+            }
+            
+    def finish_edit(self, event, item_id):
+        if hasattr(self, 'edit_data'):
+            new_text = self.edit_data['entry'].get()
+            
+            # Update the canvas text
+            self.canvas.itemconfig(item_id, text=new_text)
+            
+            # Remove the entry widget
+            self.canvas.delete(self.edit_data['window_id'])
+            del self.edit_data
+            
+    def update_preview(self, content):
+        self.canvas.delete("all")
+        self.draggable_items = {}
+        
+        # Render content with better formatting
+        y_position = 20
+        for section, details in content.items():
+            # Section header
+            section_id = self.canvas.create_text(20, y_position, anchor="nw", 
+                                    text=section.replace('_', ' ').title(), 
+                                    font=("Arial", 14, "bold"), fill="navy",
+                                    tags=("draggable", "section_header"))
+            self.draggable_items[section_id] = {'type': 'section_header', 'section': section}
+            y_position += 30
+
+            # Render different types of content
+            if section == 'personal_info':
+                for key, value in details.items():
+                    if value:  # Only show if not empty
+                        item_id = self.canvas.create_text(20, y_position, 
+                                                anchor="nw", 
+                                                text=f"{key.replace('_', ' ').title()}: {value}", 
+                                                font=("Arial", 12), fill="black",
+                                                tags=("draggable", "personal_info"))
+                        self.draggable_items[item_id] = {'type': 'personal_info', 'key': key}
+                        y_position += 25
+            elif isinstance(details, list):
+                for item in details:
+                    item_id = self.canvas.create_text(20, y_position, 
+                                            anchor="nw", 
+                                            text=str(item), 
+                                            font=("Arial", 12), fill="black",
+                                            tags=("draggable", "list_item"))
+                    self.draggable_items[item_id] = {'type': 'list_item', 'section': section}
+                    y_position += 25
+            else:
+                # For text fields like profile summary
+                item_id = self.canvas.create_text(20, y_position, 
+                                        anchor="nw", 
+                                        text=str(details), 
+                                        font=("Arial", 12), fill="black", 
+                                        width=760,  # Wider text area
+                                        tags=("draggable", "text_block"))
+                self.draggable_items[item_id] = {'type': 'text_block', 'section': section}
+                y_position += 50
+
+            y_position += 20  # Space between sections
+
+        # Update scroll region
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
 class UKCVBuilder:
     def __init__(self, root):
         self.root = root
-        self.root.title("Professional UK CV Builder")
-        self.root.geometry("1400x800")
+        self.root.title("Interactive Professional UK CV Builder")
+        self.root.geometry("1200x800")  # Adjust dimensions as needed
+        self.root.config(bg="#f0f0f0")
 
-        # Enhanced content storage with more detailed sections
+        # Main layout with left input panel and right preview
+        left_frame = tk.Frame(self.root, width=600, bg="#f0f0f0")
+        left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+
+        # Notebook for different sections
+        notebook = ttk.Notebook(left_frame)
+        notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Content storage
         self.content = {
             'personal_info': {
                 'full_name': '',
@@ -28,348 +187,319 @@ class UKCVBuilder:
             'achievements': []
         }
 
-        # Create main UI
-        self.create_ui()
-
-    def create_ui(self):
-        # Main layout with left input panel and right preview
-        left_frame = tk.Frame(self.root, width=500)
-        left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
-
-        # Notebook for different sections
-        notebook = ttk.Notebook(left_frame)
-        notebook.pack(fill=tk.BOTH, expand=True)
-
-        # Create tabs
+        # Create tabs 
         tabs = [
             ("Personal Info", self.create_personal_info_tab),
             ("Profile Summary", self.create_profile_summary_tab),
             ("Work Experience", self.create_work_experience_tab),
             ("Education", self.create_education_tab),
             ("Skills", self.create_skills_tab),
-            ("Achievements", self.create_achievements_tab)
+            ("Achievements", self.create_achievements_tab),
         ]
 
         for title, creator in tabs:
-            tab = tk.Frame(notebook)
+            tab = tk.Frame(notebook, bg="#f0f0f0")
             notebook.add(tab, text=title)
             creator(tab)
 
-        # Buttons Panel
-        buttons_frame = tk.Frame(left_frame)
-        buttons_frame.pack(fill=tk.X, pady=10)
-
-        # Generate PDF Button
-        generate_btn = tk.Button(buttons_frame, text="Generate PDF", command=self.generate_pdf)
-        generate_btn.pack(side=tk.LEFT, expand=True, padx=5)
-
-        # Preview Frame
-        right_frame = tk.Frame(self.root, width=900)
+        # Right frame for interactive canvas
+        right_frame = tk.Frame(self.root, bg="lightblue")  # Temporary color for debugging
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
-        # Preview Label
-        preview_label = tk.Label(right_frame, text="CV Preview", font=('Arial', 16, 'bold'))
-        preview_label.pack(pady=10)
+        # Create drawing canvas
+        self.drawing_canvas = DrawingCanvas(right_frame)
 
-        # Preview Text Widget
-        self.preview_text = tk.Text(right_frame, wrap=tk.WORD, font=('Arial', 12))
-        self.preview_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Button frame
+        button_frame = tk.Frame(right_frame, bg="lightgreen")  # Temporary color for debugging
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
 
-    def create_personal_info_tab(self, frame):
-        fields = [
-            ('Full Name', 'full_name'),
-            ('Professional Title', 'professional_title'),
-            ('Email', 'email'),
-            ('Phone', 'phone'),
-            ('Full Address', 'address'),
-            ('LinkedIn Profile', 'linkedin')
-        ]
+        # Buttons
+        generate_pdf_btn = tk.Button(button_frame, text="Save as PDF", command=self.generate_pdf, 
+                              bg="#4CAF50", fg="white", font=("Arial", 12), padx=20)
+        generate_pdf_btn.pack(side=tk.LEFT, padx=10)
 
-        for i, (label_text, key) in enumerate(fields):
-            label = tk.Label(frame, text=label_text)
-            label.grid(row=i, column=0, sticky='w', padx=5, pady=2)
+        save_btn = tk.Button(button_frame, text="Save CV Data", command=self.save_cv_data, 
+                           bg="#2196F3", fg="white", font=("Arial", 12), padx=20)
+        save_btn.pack(side=tk.LEFT, padx=10)
 
-            entry = tk.Entry(frame, width=50)
-            entry.grid(row=i, column=1, padx=5, pady=2)
+        load_btn = tk.Button(button_frame, text="Load CV Data", command=self.load_cv_data, 
+                           bg="#FF9800", fg="white", font=("Arial", 12), padx=20)
+        load_btn.pack(side=tk.LEFT, padx=10)
 
-            entry.bind('<KeyRelease>', lambda e, k=key: self.update_content('personal_info', k, e))
+        # Add a refresh button to update the preview
+        refresh_btn = tk.Button(button_frame, text="Refresh Preview", command=self.refresh_preview,
+                              bg="#9C27B0", fg="white", font=("Arial", 12), padx=20)
+        refresh_btn.pack(side=tk.LEFT, padx=10)
 
-    def create_profile_summary_tab(self, frame):
-        label = tk.Label(frame, text="Professional Profile Summary:")
-        label.pack(pady=5)
+        # Add padding to ensure visibility
+        button_frame.pack_propagate(False)
+        button_frame.config(height=50)  # Adjust height if needed
 
-        self.summary_text = tk.Text(frame, height=6, width=50, wrap=tk.WORD)
-        self.summary_text.pack(pady=5)
+    def refresh_preview(self):
+        """Force a refresh of the preview canvas"""
+        self.drawing_canvas.update_preview(self.content)
 
-        save_btn = tk.Button(frame, text="Save Summary",
-                             command=lambda: self.update_content('profile_summary', 'summary',
-                                                                 self.summary_text))
-        save_btn.pack(pady=5)
+    def create_personal_info_tab(self, tab):
+        tk.Label(tab, text="Full Name", bg="#f0f0f0", font=("Arial", 12)).pack(pady=5)
+        self.full_name_entry = tk.Entry(tab, font=("Arial", 12), width=40)
+        self.full_name_entry.pack(pady=5)
 
-    def create_work_experience_tab(self, frame):
-        # Company Name
-        tk.Label(frame, text="Company Name:").pack()
-        company_entry = tk.Entry(frame, width=50)
-        company_entry.pack()
+        tk.Label(tab, text="Professional Title", bg="#f0f0f0", font=("Arial", 12)).pack(pady=5)
+        self.professional_title_entry = tk.Entry(tab, font=("Arial", 12), width=40)
+        self.professional_title_entry.pack(pady=5)
 
-        # Job Title
-        tk.Label(frame, text="Job Title:").pack()
-        job_title_entry = tk.Entry(frame, width=50)
-        job_title_entry.pack()
+        tk.Label(tab, text="Email", bg="#f0f0f0", font=("Arial", 12)).pack(pady=5)
+        self.email_entry = tk.Entry(tab, font=("Arial", 12), width=40)
+        self.email_entry.pack(pady=5)
 
-        # Dates
-        date_frame = tk.Frame(frame)
-        date_frame.pack(pady=5)
-        tk.Label(date_frame, text="Start Date:").pack(side=tk.LEFT)
-        start_date_entry = tk.Entry(date_frame, width=15)
-        start_date_entry.pack(side=tk.LEFT, padx=5)
-        tk.Label(date_frame, text="End Date:").pack(side=tk.LEFT)
-        end_date_entry = tk.Entry(date_frame, width=15)
-        end_date_entry.pack(side=tk.LEFT)
+        tk.Label(tab, text="Phone", bg="#f0f0f0", font=("Arial", 12)).pack(pady=5)
+        self.phone_entry = tk.Entry(tab, font=("Arial", 12), width=40)
+        self.phone_entry.pack(pady=5)
 
-        # Responsibilities
-        tk.Label(frame, text="Key Responsibilities:").pack()
-        responsibilities_text = tk.Text(frame, height=4, width=50, wrap=tk.WORD)
-        responsibilities_text.pack()
+        tk.Label(tab, text="Address", bg="#f0f0f0", font=("Arial", 12)).pack(pady=5)
+        self.address_entry = tk.Entry(tab, font=("Arial", 12), width=40)
+        self.address_entry.pack(pady=5)
 
-        def add_experience():
-            experience = {
-                'company': company_entry.get(),
-                'job_title': job_title_entry.get(),
-                'start_date': start_date_entry.get(),
-                'end_date': end_date_entry.get(),
-                'responsibilities': responsibilities_text.get("1.0", tk.END).strip()
-            }
-            self.content['work_experience'].append(experience)
+        tk.Label(tab, text="LinkedIn", bg="#f0f0f0", font=("Arial", 12)).pack(pady=5)
+        self.linkedin_entry = tk.Entry(tab, font=("Arial", 12), width=40)
+        self.linkedin_entry.pack(pady=5)
 
-            # Clear entries
-            for entry in [company_entry, job_title_entry, start_date_entry, end_date_entry]:
-                entry.delete(0, tk.END)
-            responsibilities_text.delete("1.0", tk.END)
+        save_button = tk.Button(tab, text="Save Personal Info", command=self.save_personal_info, 
+                              bg="#4CAF50", fg="white", font=("Arial", 12))
+        save_button.pack(pady=20)
 
-            self.update_preview()
+    def save_personal_info(self):
+        self.content['personal_info'] = {
+            'full_name': self.full_name_entry.get(),
+            'professional_title': self.professional_title_entry.get(),
+            'email': self.email_entry.get(),
+            'phone': self.phone_entry.get(),
+            'address': self.address_entry.get(),
+            'linkedin': self.linkedin_entry.get(),
+        }
+        messagebox.showinfo("Success", "Personal Info saved successfully!")
+        self.drawing_canvas.update_preview(self.content)
 
-        add_btn = tk.Button(frame, text="Add Experience", command=add_experience)
-        add_btn.pack(pady=5)
+    def create_profile_summary_tab(self, tab):
+        tk.Label(tab, text="Profile Summary", bg="#f0f0f0", font=("Arial", 12)).pack(pady=5)
+        self.profile_summary_text = tk.Text(tab, height=15, width=60, font=("Arial", 12), wrap=tk.WORD)
+        scrollbar = tk.Scrollbar(tab, command=self.profile_summary_text.yview)
+        self.profile_summary_text.configure(yscrollcommand=scrollbar.set)
+        self.profile_summary_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-    def create_education_tab(self, frame):
-        # Institution
-        tk.Label(frame, text="Institution Name:").pack()
-        institution_entry = tk.Entry(frame, width=50)
-        institution_entry.pack()
+        save_button = tk.Button(tab, text="Save Profile Summary", command=self.save_profile_summary, 
+                              bg="#4CAF50", fg="white", font=("Arial", 12))
+        save_button.pack(pady=20)
 
-        # Degree
-        tk.Label(frame, text="Degree/Qualification:").pack()
-        degree_entry = tk.Entry(frame, width=50)
-        degree_entry.pack()
+    def save_profile_summary(self):
+        self.content['profile_summary'] = self.profile_summary_text.get("1.0", tk.END).strip()
+        messagebox.showinfo("Success", "Profile Summary saved successfully!")
+        self.drawing_canvas.update_preview(self.content)
 
-        # Graduation Date
-        tk.Label(frame, text="Graduation Date:").pack()
-        graduation_date_entry = tk.Entry(frame, width=50)
-        graduation_date_entry.pack()
+    def create_work_experience_tab(self, tab):
+        tk.Label(tab, text="Work Experience (one per line)", bg="#f0f0f0", font=("Arial", 12)).pack(pady=5)
+        self.work_experience_text = tk.Text(tab, height=15, width=60, font=("Arial", 12), wrap=tk.WORD)
+        scrollbar = tk.Scrollbar(tab, command=self.work_experience_text.yview)
+        self.work_experience_text.configure(yscrollcommand=scrollbar.set)
+        self.work_experience_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Additional Details
-        tk.Label(frame, text="Additional Details:").pack()
-        details_text = tk.Text(frame, height=4, width=50, wrap=tk.WORD)
-        details_text.pack()
+        save_button = tk.Button(tab, text="Save Work Experience", command=self.save_work_experience, 
+                              bg="#4CAF50", fg="white", font=("Arial", 12))
+        save_button.pack(pady=20)
 
-        def add_education():
-            education = {
-                'institution': institution_entry.get(),
-                'degree': degree_entry.get(),
-                'graduation_date': graduation_date_entry.get(),
-                'details': details_text.get("1.0", tk.END).strip()
-            }
-            self.content['education'].append(education)
+    def save_work_experience(self):
+        self.content['work_experience'] = self.work_experience_text.get("1.0", tk.END).strip().split('\n')
+        messagebox.showinfo("Success", "Work Experience saved successfully!")
+        self.drawing_canvas.update_preview(self.content)
 
-            # Clear entries
-            for entry in [institution_entry, degree_entry, graduation_date_entry]:
-                entry.delete(0, tk.END)
-            details_text.delete("1.0", tk.END)
+    def create_education_tab(self, tab):
+        tk.Label(tab, text="Education (one per line)", bg="#f0f0f0", font=("Arial", 12)).pack(pady=5)
+        self.education_text = tk.Text(tab, height=15, width=60, font=("Arial", 12), wrap=tk.WORD)
+        scrollbar = tk.Scrollbar(tab, command=self.education_text.yview)
+        self.education_text.configure(yscrollcommand=scrollbar.set)
+        self.education_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-            self.update_preview()
+        save_button = tk.Button(tab, text="Save Education", command=self.save_education, 
+                              bg="#4CAF50", fg="white", font=("Arial", 12))
+        save_button.pack(pady=20)
 
-        add_btn = tk.Button(frame, text="Add Education", command=add_education)
-        add_btn.pack(pady=5)
+    def save_education(self):
+        self.content['education'] = self.education_text.get("1.0", tk.END).strip().split('\n')
+        messagebox.showinfo("Success", "Education saved successfully!")
+        self.drawing_canvas.update_preview(self.content)
 
-    def create_skills_tab(self, frame):
-        tk.Label(frame, text="Add Skills (Press Enter after each skill):").pack()
+    def create_skills_tab(self, tab):
+        tk.Label(tab, text="Skills (one per line)", bg="#f0f0f0", font=("Arial", 12)).pack(pady=5)
+        self.skills_text = tk.Text(tab, height=15, width=60, font=("Arial", 12), wrap=tk.WORD)
+        scrollbar = tk.Scrollbar(tab, command=self.skills_text.yview)
+        self.skills_text.configure(yscrollcommand=scrollbar.set)
+        self.skills_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        skills_entry = tk.Entry(frame, width=50)
-        skills_entry.pack()
+        save_button = tk.Button(tab, text="Save Skills", command=self.save_skills, 
+                              bg="#4CAF50", fg="white", font=("Arial", 12))
+        save_button.pack(pady=20)
 
-        skills_listbox = tk.Listbox(frame, width=50, height=10)
-        skills_listbox.pack(pady=5)
+    def save_skills(self):
+        self.content['skills'] = self.skills_text.get("1.0", tk.END).strip().split('\n')
+        messagebox.showinfo("Success", "Skills saved successfully!")
+        self.drawing_canvas.update_preview(self.content)
 
-        def add_skill(event=None):
-            skill = skills_entry.get().strip()
-            if skill:
-                skills_listbox.insert(tk.END, skill)
-                skills_entry.delete(0, tk.END)
-                self.content['skills'] = list(skills_listbox.get(0, tk.END))
-                self.update_preview()
+    def create_achievements_tab(self, tab):
+        tk.Label(tab, text="Achievements (one per line)", bg="#f0f0f0", font=("Arial", 12)).pack(pady=5)
+        self.achievements_text = tk.Text(tab, height=15, width=60, font=("Arial", 12), wrap=tk.WORD)
+        scrollbar = tk.Scrollbar(tab, command=self.achievements_text.yview)
+        self.achievements_text.configure(yscrollcommand=scrollbar.set)
+        self.achievements_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        def remove_skill():
-            selected = skills_listbox.curselection()
-            if selected:
-                skills_listbox.delete(selected)
-                self.content['skills'] = list(skills_listbox.get(0, tk.END))
-                self.update_preview()
+        save_button = tk.Button(tab, text="Save Achievements", command=self.save_achievements, 
+                              bg="#4CAF50", fg="white", font=("Arial", 12))
+        save_button.pack(pady=20)
 
-        skills_entry.bind('<Return>', add_skill)
+    def save_achievements(self):
+        self.content['achievements'] = self.achievements_text.get("1.0", tk.END).strip().split('\n')
+        messagebox.showinfo("Success", "Achievements saved successfully!")
+        self.drawing_canvas.update_preview(self.content)
 
-        remove_btn = tk.Button(frame, text="Remove Selected Skill", command=remove_skill)
-        remove_btn.pack(pady=5)
+    def save_cv_data(self):
+        """Save CV data to a JSON file"""
+        filename = filedialog.asksaveasfilename(defaultextension=".json", 
+                                              filetypes=[("JSON files", "*.json")])
+        if filename:
+            try:
+                with open(filename, 'w') as f:
+                    json.dump(self.content, f, indent=4)
+                messagebox.showinfo("Success", f"CV data saved to {filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not save file: {e}")
 
-    def create_achievements_tab(self, frame):
-        tk.Label(frame, text="Add Achievements:").pack()
+    def load_cv_data(self):
+        """Load CV data from a JSON file"""
+        filename = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")])
+        if filename:
+            try:
+                with open(filename, 'r') as f:
+                    loaded_content = json.load(f)
+                
+                # Update content and UI elements
+                self.content = loaded_content
+                
+                # Update Personal Info entries
+                personal_info = loaded_content.get('personal_info', {})
+                self.full_name_entry.delete(0, tk.END)
+                self.full_name_entry.insert(0, personal_info.get('full_name', ''))
+                self.professional_title_entry.delete(0, tk.END)
+                self.professional_title_entry.insert(0, personal_info.get('professional_title', ''))
+                self.email_entry.delete(0, tk.END)
+                self.email_entry.insert(0, personal_info.get('email', ''))
+                self.phone_entry.delete(0, tk.END)
+                self.phone_entry.insert(0, personal_info.get('phone', ''))
+                self.address_entry.delete(0, tk.END)
+                self.address_entry.insert(0, personal_info.get('address', ''))
+                self.linkedin_entry.delete(0, tk.END)
+                self.linkedin_entry.insert(0, personal_info.get('linkedin', ''))
 
-        achievement_entry = tk.Entry(frame, width=50)
-        achievement_entry.pack()
+                # Update text fields
+                self.profile_summary_text.delete('1.0', tk.END)
+                self.profile_summary_text.insert('1.0', loaded_content.get('profile_summary', ''))
+                
+                self.work_experience_text.delete('1.0', tk.END)
+                self.work_experience_text.insert('1.0', '\n'.join(loaded_content.get('work_experience', [])))
+                
+                self.education_text.delete('1.0', tk.END)
+                self.education_text.insert('1.0', '\n'.join(loaded_content.get('education', [])))
+                
+                self.skills_text.delete('1.0', tk.END)
+                self.skills_text.insert('1.0', '\n'.join(loaded_content.get('skills', [])))
+                
+                self.achievements_text.delete('1.0', tk.END)
+                self.achievements_text.insert('1.0', '\n'.join(loaded_content.get('achievements', [])))
 
-        achievements_listbox = tk.Listbox(frame, width=50, height=10)
-        achievements_listbox.pack(pady=5)
-
-        def add_achievement(event=None):
-            achievement = achievement_entry.get().strip()
-            if achievement:
-                achievements_listbox.insert(tk.END, achievement)
-                achievement_entry.delete(0, tk.END)
-                self.content['achievements'] = list(achievements_listbox.get(0, tk.END))
-                self.update_preview()
-
-        def remove_achievement():
-            selected = achievements_listbox.curselection()
-            if selected:
-                achievements_listbox.delete(selected)
-                self.content['achievements'] = list(achievements_listbox.get(0, tk.END))
-                self.update_preview()
-
-        achievement_entry.bind('<Return>', add_achievement)
-
-        remove_btn = tk.Button(frame, text="Remove Selected Achievement", command=remove_achievement)
-        remove_btn.pack(pady=5)
-
-    def update_content(self, section, key, event):
-        if isinstance(event, tk.Event):
-            value = event.widget.get()
-        else:
-            value = event.get("1.0", tk.END).strip()
-
-        if section == 'personal_info':
-            self.content['personal_info'][key] = value
-        elif section == 'profile_summary':
-            self.content[section] = value
-
-        self.update_preview()
-
-    def update_preview(self):
-        self.preview_text.delete(1.0, tk.END)
-
-        # Preview personal information
-        personal_info = self.content['personal_info']
-        self.preview_text.insert(tk.END, f"{personal_info['full_name']}\n")
-        self.preview_text.insert(tk.END, f"{personal_info['professional_title']}\n")
-        self.preview_text.insert(tk.END, f"Email: {personal_info['email']}\n")
-        self.preview_text.insert(tk.END, f"Phone: {personal_info['phone']}\n")
-        self.preview_text.insert(tk.END, f"Address: {personal_info['address']}\n")
-        self.preview_text.insert(tk.END, f"LinkedIn: {personal_info['linkedin']}\n\n")
-
-        # Preview Profile Summary
-        self.preview_text.insert(tk.END, "Profile Summary:\n")
-        self.preview_text.insert(tk.END, self.content['profile_summary'] + "\n\n")
-
-        # Preview Work Experience
-        self.preview_text.insert(tk.END, "Work Experience:\n")
-        for exp in self.content['work_experience']:
-            self.preview_text.insert(tk.END, f"{exp['job_title']} at {exp['company']}\n")
-            self.preview_text.insert(tk.END, f"{exp['start_date']} - {exp['end_date']}\n")
-            self.preview_text.insert(tk.END, f"Responsibilities: {exp['responsibilities']}\n\n")
-
-        # Preview Education
-        self.preview_text.insert(tk.END, "Education:\n")
-        for edu in self.content['education']:
-            self.preview_text.insert(tk.END, f"{edu['degree']} from {edu['institution']}\n")
-            self.preview_text.insert(tk.END, f"Graduated: {edu['graduation_date']}\n")
-            self.preview_text.insert(tk.END, f"Details: {edu['details']}\n\n")
-
-        # Preview Skills
-        self.preview_text.insert(tk.END, "Skills:\n")
-        for skill in self.content['skills']:
-            self.preview_text.insert(tk.END, f"{skill}\n")
-
-        # Preview Achievements
-        self.preview_text.insert(tk.END, "Achievements:\n")
-        for achievement in self.content['achievements']:
-            self.preview_text.insert(tk.END, f"{achievement}\n")
+                # Update preview
+                self.drawing_canvas.update_preview(self.content)
+                
+                messagebox.showinfo("Success", f"CV data loaded from {filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not load file: {e}")
 
     def generate_pdf(self):
+        """Enhanced PDF generation with more robust formatting"""
+        # Create output directory if it doesn't exist
+        output_dir = os.path.join(os.getcwd(), "output")
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        name = self.content['personal_info']['full_name'].replace(' ', '_') if self.content['personal_info']['full_name'] else "CV"
+        default_filename = f"{name}_{timestamp}.pdf"
+        filename = os.path.join(output_dir, default_filename)
+
         pdf = FPDF()
-        pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
+        pdf.set_font("Arial", size=12)
 
-        # Adding title and personal information
-        personal_info = self.content['personal_info']
-        pdf.set_font('Arial', 'B', 16)
-        pdf.cell(200, 10, txt=personal_info['full_name'], ln=True, align='C')
-        pdf.set_font('Arial', 'I', 12)
-        pdf.cell(200, 10, txt=personal_info['professional_title'], ln=True, align='C')
-        pdf.ln(10)
-        pdf.set_font('Arial', '', 12)
-
-        # Adding email, phone, and LinkedIn
-        pdf.cell(200, 10, f"Email: {personal_info['email']}", ln=True)
-        pdf.cell(200, 10, f"Phone: {personal_info['phone']}", ln=True)
-        pdf.cell(200, 10, f"LinkedIn: {personal_info['linkedin']}", ln=True)
-        pdf.cell(200, 10, f"Address: {personal_info['address']}", ln=True)
-        pdf.ln(10)
-
-        # Adding Profile Summary
-        pdf.set_font('Arial', 'B', 14)
-        pdf.cell(200, 10, "Profile Summary", ln=True)
-        pdf.set_font('Arial', '', 12)
-        pdf.multi_cell(0, 10, self.content['profile_summary'])
-        pdf.ln(10)
-
-        # Adding Work Experience
-        pdf.set_font('Arial', 'B', 14)
-        pdf.cell(200, 10, "Work Experience", ln=True)
-        pdf.set_font('Arial', '', 12)
-        for exp in self.content['work_experience']:
-            pdf.cell(200, 10, f"{exp['job_title']} at {exp['company']}", ln=True)
-            pdf.cell(200, 10, f"{exp['start_date']} - {exp['end_date']}", ln=True)
-            pdf.multi_cell(0, 10, f"Responsibilities: {exp['responsibilities']}")
-            pdf.ln(5)
-
-        # Adding Education
-        pdf.set_font('Arial', 'B', 14)
-        pdf.cell(200, 10, "Education", ln=True)
-        pdf.set_font('Arial', '', 12)
-        for edu in self.content['education']:
-            pdf.cell(200, 10, f"{edu['degree']} from {edu['institution']}", ln=True)
-            pdf.cell(200, 10, f"Graduated: {edu['graduation_date']}", ln=True)
-            pdf.multi_cell(0, 10, f"Details: {edu['details']}")
-            pdf.ln(5)
-
-        # Adding Skills
-        pdf.set_font('Arial', 'B', 14)
-        pdf.cell(200, 10, "Skills", ln=True)
-        pdf.set_font('Arial', '', 12)
-        for skill in self.content['skills']:
-            pdf.cell(200, 10, skill, ln=True)
+        # Personal Info Header
+        pdf.set_font("Arial", "B", 16)
+        pdf.cell(0, 10, txt=self.content['personal_info']['full_name'], ln=True, align='C')
+        pdf.set_font("Arial", size=12)
+        pdf.cell(0, 10, txt=self.content['personal_info']['professional_title'], ln=True, align='C')
+        
         pdf.ln(5)
+        pdf.cell(0, 10, txt=f"Email: {self.content['personal_info']['email']} | "
+                             f"Phone: {self.content['personal_info']['phone']}", ln=True, align='C')
+        pdf.cell(0, 10, txt=f"Address: {self.content['personal_info']['address']} | "
+                             f"LinkedIn: {self.content['personal_info']['linkedin']}", ln=True, align='C')
 
-        # Adding Achievements
-        pdf.set_font('Arial', 'B', 14)
-        pdf.cell(200, 10, "Achievements", ln=True)
-        pdf.set_font('Arial', '', 12)
-        for achievement in self.content['achievements']:
-            pdf.cell(200, 10, achievement, ln=True)
+        pdf.ln(10)
 
-        # Saving PDF to file
-        file_path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
-        if file_path:
-            pdf.output(file_path)
+        # Sections with bold headers
+        sections = [
+            ('Profile Summary', 'profile_summary'),
+            ('Work Experience', 'work_experience'),
+            ('Education', 'education'),
+            ('Skills', 'skills'),
+            ('Achievements', 'achievements')
+        ]
+
+        for header, key in sections:
+            pdf.set_font("Arial", "B", 14)
+            pdf.cell(0, 10, txt=header, ln=True)
+            pdf.set_font("Arial", size=12)
+            
+            # Handle different content types
+            if key == 'profile_summary':
+                pdf.multi_cell(0, 10, txt=str(self.content[key]))
+            else:
+                # For list-type sections
+                content = self.content[key]
+                if isinstance(content, list):
+                    for item in content:
+                        pdf.multi_cell(0, 10, txt=str(item))
+                else:
+                    pdf.multi_cell(0, 10, txt=str(content))
+            
+            pdf.ln(5)
+
+        try:
+            pdf.output(filename)
+            messagebox.showinfo("Success", f"CV saved as:\n{filename}")
+            
+            # Try to open the PDF automatically
+            try:
+                if os.name == 'nt':  # For Windows
+                    os.startfile(filename)
+                elif os.name == 'posix':  # For macOS and Linux
+                    os.system(f'open "{filename}"' if sys.platform == 'darwin' else f'xdg-open "{filename}"')
+            except:
+                pass  # If opening fails, just continue
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not save PDF: {e}")
 
 if __name__ == "__main__":
     root = tk.Tk()
